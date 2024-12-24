@@ -1,0 +1,90 @@
+import os
+import numpy as np
+import pandas as pd
+import cv2
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+import tensorflow as tf
+from tensorflow.keras.layers import Conv2D, MaxPool2D, Flatten, Dense, Dropout, GlobalAveragePooling2D
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.applications import Xception
+from tensorflow.keras.applications.xception import preprocess_input
+from tensorflow.keras.optimizers import SGD
+from plotly.graph_objs import Bar, Layout
+from plotly.offline import iplot
+
+# Load metadata
+def get_data():
+    try:
+        return pd.read_csv('../input/deepfake-faces/metadata.csv')
+    except FileNotFoundError:
+        print("Metadata file not found. Check the path.")
+        return None
+
+meta = get_data()
+if meta is not None:
+    print(meta.head())
+    print(f"Dataset shape: {meta.shape}")
+
+# Data sampling
+sample_size = 8000
+real_df = meta[meta["label"] == "REAL"].sample(sample_size, random_state=42)
+fake_df = meta[meta["label"] == "FAKE"].sample(sample_size, random_state=42)
+sample_meta = pd.concat([real_df, fake_df])
+
+# Train, validation, test split
+Train_set, Test_set = train_test_split(sample_meta, test_size=0.2, random_state=42, stratify=sample_meta['label'])
+Train_set, Val_set = train_test_split(Train_set, test_size=0.3, random_state=42, stratify=Train_set['label'])
+
+# Dataset summary visualization
+def plot_class_distribution(train, val, test):
+    y = {'REAL': [], 'FAKE': []}
+    for dataset in [train, val, test]:
+        y['REAL'].append(np.sum(dataset['label'] == 'REAL'))
+        y['FAKE'].append(np.sum(dataset['label'] == 'FAKE'))
+    
+    data = [
+        Bar(x=['Train Set', 'Validation Set', 'Test Set'], y=y['REAL'], name='REAL', marker=dict(color='#33cc33')),
+        Bar(x=['Train Set', 'Validation Set', 'Test Set'], y=y['FAKE'], name='FAKE', marker=dict(color='#ff3300'))
+    ]
+    layout = Layout(title='Class Distribution in Datasets', xaxis={'title': 'Dataset'}, yaxis={'title': 'Count'})
+    fig = dict(data=data, layout=layout)
+    iplot(fig)
+
+plot_class_distribution(Train_set, Val_set, Test_set)
+
+# Load images and labels
+def load_dataset(set_name):
+    images, labels = [], []
+    base_path = '../input/deepfake-faces/faces_224/'
+    for _, row in set_name.iterrows():
+        img_path = os.path.join(base_path, row['videoname'][:-4] + '.jpg')
+        if os.path.exists(img_path):
+            images.append(cv2.imread(img_path))
+            labels.append(1 if row['label'] == 'FAKE' else 0)
+    return np.array(images), np.array(labels)
+
+X_train, y_train = load_dataset(Train_set)
+X_val, y_val = load_dataset(Val_set)
+X_test, y_test = load_dataset(Test_set)
+
+# Model creation function
+def create_model():
+    base_model = Xception(weights="imagenet", include_top=False, input_shape=(224, 224, 3))
+    base_model.trainable = False
+    avg = GlobalAveragePooling2D()(base_model.output)
+    output = Dense(1, activation="sigmoid")(avg)
+    model = Model(inputs=base_model.input, outputs=output)
+    return model
+
+# Compile and train model
+model = create_model()
+model.compile(optimizer=SGD(learning_rate=0.01, momentum=0.9), loss="binary_crossentropy", metrics=["accuracy"])
+history = model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=5, batch_size=32)
+
+# Evaluate model
+test_loss, test_accuracy = model.evaluate(X_test, y_test)
+print(f"Test Accuracy: {test_accuracy:.2f}")
+
+# Save model
+model.save('xception_deepfake_image.h5')
